@@ -1,0 +1,34 @@
+---
+title: "Home"
+output: html_document
+---
+
+:::: hero
+<img src="images/Di.jpg" alt="Portrait of Di" class="headshot"/>
+
+<div>
+
+\`\`\`\
+Hi, I'm Di
+
+PhD Student in Biomedical Engineering \@ Case Western Reserve University
+
+Email:[dxf244\@case.edu](mailto:dxf244@case.edu){.email} .
+
+</div>
+::::
+
+------------------------------------------------------------------------
+
+## Welcome
+
+I am a PhD student in **Biomedical Engineering at CWRU**.
+
+## Latest Updates
+
+Still working on what to put on this website. More on the way.
+
+## Fun Side
+
+When I’m not in the lab, I enjoy tennis, looking for NTRP 3.5 player hitting together.\
+And of course — don’t miss the **Meet My Cat** page 🐾.

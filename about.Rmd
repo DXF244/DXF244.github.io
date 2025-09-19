@@ -1,0 +1,10 @@
+---
+title: "About Me"
+output: html_document
+---
+
+# About Me
+
+Hi, I’m **Di**, a PhD student in **Biomedical Engineering at Case Western Reserve University (CWRU)**.  
+
+I graduated from Lanzhou University with a B.S in Theoretical and Applied Mechanics and Case Western Reserve University with an M.S. in Mechanical Engineering. He is currently integrating optical and mechanical approaches to investigate corneal biomechanics.

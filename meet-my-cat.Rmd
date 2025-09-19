@@ -1,0 +1,32 @@
+---
+title: "Meet My Cat"
+output: html_document
+---
+
+# Meet My Cat 🐱
+
+:::: hero
+<img src="images/amiya.jpg" alt="Photo of my cat" class="headshot"/>
+
+<div>
+
+```         
+This is Aimya
+She is 5 month old. She joined my family this Junel!
+```
+
+</div>
+::::
+
+:::: hero
+<img src="images/doctor.jpg" alt="Photo of my cat" class="headshot"/>
+
+<div>
+
+```         
+This is DOctor
+They are siblings, both domestic short hair!
+```
+
+</div>
+::::
