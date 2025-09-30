@@ -1,0 +1,279 @@
+---
+title: “Visualization of data for corneal biomechanics in eye clinic”
+format: 
+  dashboard:
+    nav-buttons: [github]
+    github: https://github.com/DXF244/Cornealdata
+theme: [sandstone, theme/custom.scss]
+fig-width: 10
+fig-asp: 0.3
+params:
+  # Default filter parameters (you can change these before rendering)
+  # Reference rates to color value boxes (adjust as desired)
+  sex: "All"          # "All", "Male", "Female"
+  age_min: 20
+  age_max: 59
+  fasting_only: true  # apply fasting >= 8h for fasting summaries
+  weighted: false     # this static dashboard uses unweighted summaries by default
+  us_obesity_rate: 0.33
+  us_htn_rate:     0.27
+  threshold_diff:  0.02
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+#| label: load-packages
+#| message: false
+library(tidyverse)
+library(janitor)
+library(scales)
+library(broom)
+library(DT)
+library(gt)
+library(purrr)
+theme_set(theme_minimal(base_size = 20, base_family = "sans"))
+```
+
+```{r}
+#| label: load-data
+#| message: false
+# Produced by your scripts/01_fetch_nhanes.R + scripts/02_build_master.R
+nh <- readRDS("data/processed/nhanes_2017_2020.rds") |>
+  clean_names() |>
+  mutate(
+    sex = factor(sex, levels = c("Male","Female")),
+    income_cat = cut(indfmpir, breaks = c(-Inf, 1, 2, Inf),
+                     labels = c("≤100% poverty", "100–200%", ">200%"))
+  )
+
+```
+
+```{r}
+#| label: set-inputs
+# Study 1 filters (static params)
+d <- nh |>
+  filter(ridageyr >= params$age_min, ridageyr <= params$age_max)
+if (params$sex != "All") d <- d |> filter(sex == params$sex)
+
+# Fasting subset (≥8h) for fasting markers
+d_fast <- d
+if (isTRUE(params$fasting_only)) {
+  d_fast <- d_fast |> filter(!is.na(hrs_fast), hrs_fast >= 8)
+}
+
+# Robust 90% confidence level
+conf90 <- params$conf_level
+if (is.null(conf90)) conf90 <- 0.90
+conf90 <- suppressWarnings(as.numeric(conf90))
+if (!is.finite(conf90)) conf90 <- 0.90
+if (conf90 > 1) conf90 <- conf90 / 100
+if (conf90 <= 0 || conf90 >= 1) conf90 <- 0.90
+
+```
+
+#  {.sidebar}
+
+**Study 1 snapshot** — NHANES **2017–2018** + **2019–Mar 2020 (pre-pandemic)**.  
+Filters (top of file) set to ages `{r} params$age_min`–`{r} params$age_max`, sex `{r} params$sex`, fasting-only = `{r} params$fasting_only`.  
+**All confidence intervals use `{r} 100*params$conf_level`%**.
+
+|                      |                               |
+|----------------------|-------------------------------|
+| **Population**       | U.S. civilian, non-institutionalized |
+| **Cycles combined**  | 2017–2018; 2019–Mar 2020      |
+| **Unit**             | 1 row per participant (`seqn`) |
+
+------------------------------------------------------------------------
+
+**Weights & design**: For inference, use MEC weights (`wtmecprp`) or fasting subsample weights (`wt_fast`) with PSU/strata (`sdmvpsu`, `sdmvstra`).  
+This static dashboard shows **unweighted** summaries; CIs below are simple sample-based 90% intervals.
+
+# All
+
+```{r}
+#| label: all-values
+#| results: hide
+n_participants <- nrow(d)
+mean_age  <- mean(d$ridageyr, na.rm = TRUE)
+mean_bmi  <- mean(d$bmxbmi,   na.rm = TRUE)
+p_obesity <- mean(d$bmxbmi >= 30, na.rm = TRUE)
+p_htn     <- mean(d$htn_130_80 == 1, na.rm = TRUE)
+
+obesity_color <- case_when(
+  between(p_obesity, params$us_obesity_rate, params$us_obesity_rate + params$threshold_diff) ~ "warning",
+  p_obesity > params$us_obesity_rate + params$threshold_diff ~ "danger",
+  .default = "light"
+)
+htn_color <- case_when(
+  between(p_htn, params$us_htn_rate, params$us_htn_rate + params$threshold_diff) ~ "warning",
+  p_htn > params$us_htn_rate + params$threshold_diff ~ "danger",
+  .default = "light"
+)
+```
+
+## Row {height="22%"}
+
+```{r}
+#| content: valuebox
+#| title: "Participants (filtered)"
+list(icon = "people", color = "primary", value = scales::comma(n_participants))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Mean age"
+list(icon = "person-vcard", color = "light", value = round(mean_age, 1))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Mean BMI"
+list(icon = "activity", color = "light", value = round(mean_bmi, 1))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Obesity (BMI ≥ 30)"
+list(icon = "clipboard2-pulse", color = obesity_color, value = label_percent(accuracy = 0.1)(p_obesity))
+```
+
+```{r}
+#| content: valuebox
+#| title: "HTN (≥130/80)"
+list(icon = "heart-pulse", color = htn_color, value = label_percent(accuracy = 0.1)(p_htn))
+```
+
+## Row {height="38%"}
+
+### Column {width="45%"}
+
+```{r}
+#| title: BMI vs Total Cholesterol
+d |>
+  filter(!is.na(bmxbmi), !is.na(tc_mgdl)) |>
+  ggplot(aes(x = bmxbmi, y = tc_mgdl, color = sex)) +
+  geom_point(alpha = 0.35) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(x = "BMI (kg/m²)", y = "Total cholesterol (mg/dL)", color = "Sex")
+```
+
+### Column {width="55%"}
+
+```{r}
+#| title: Hypertension (≥130/80) by income — 90% CI
+htn_by_income <- d |>
+  filter(!is.na(income_cat)) |>
+  group_by(income_cat) |>
+  summarise(
+    cases = sum(htn_130_80 == 1, na.rm = TRUE),
+    n     = n(),
+    prev  = cases / n,
+    .groups = "drop"
+  ) |>
+  filter(n > 0) |>
+  mutate(
+    ci_low  = map2_dbl(cases, n, ~ prop.test(.x, .y, conf.level = conf90, correct = TRUE)$conf.int[1]),
+    ci_high = map2_dbl(cases, n, ~ prop.test(.x, .y, conf.level = conf90, correct = TRUE)$conf.int[2])
+  )
+
+ggplot(htn_by_income, aes(x = income_cat, y = prev)) +
+  geom_col(fill = "#0e2635") +
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0.2) +
+  scale_y_continuous(labels = label_percent()) +
+  labs(x = NULL, y = paste0("Prevalence (unweighted, ", round(100*conf90), "% CI)"))
+
+```
+
+## Row {height="40%"}
+
+```{r}
+#| title: Fasting markers (HDL, TG, Glucose, A1c) — 90% CI
+summ_ci <- function(x, conf = 0.90) {
+  x <- x[!is.na(x)]
+  n <- length(x); m <- mean(x); s <- sd(x)
+  if (n <= 1 || is.na(s)) return(tibble(mean = m, low = NA_real_, high = NA_real_, n = n))
+  tcrit <- qt((1 + conf) / 2, df = n - 1)
+  se <- s / sqrt(n)
+  tibble(mean = m, low = m - tcrit*se, high = m + tcrit*se, n = n)
+}
+
+lipid_sum <- bind_rows(
+  tibble(marker = "HDL", summ = list(summ_ci(d_fast$hdl_mgdl,  conf = conf90))),
+  tibble(marker = "TG",  summ = list(summ_ci(d_fast$trig_mgdl, conf = conf90))),
+  tibble(marker = "Glu", summ = list(summ_ci(d_fast$glu_mgdl,  conf = conf90))),
+  tibble(marker = "A1c", summ = list(summ_ci(d_fast$a1c_pct,   conf = conf90)))
+) |>
+  tidyr::unnest(cols = summ)
+
+ggplot(lipid_sum, aes(marker, mean)) +
+  geom_col(fill = "#ae8b2d") +
+  geom_errorbar(aes(ymin = low, ymax = high), width = 0.2) +
+  labs(x = NULL, y = paste0("Mean (unweighted, ", round(100*conf90), "% CI)"))
+
+```
+
+```{r}
+#| title: Model:Obesity ~ Age + Sex + LDL + SBP — 90% Wald CI
+
+# Build a clean analysis frame and avoid NAs
+d_model <- d |>
+  transmute(
+    obese = as.integer(bmxbmi >= 30),
+    ridageyr, sex, ldl_calc, sbp
+  ) |>
+  tidyr::drop_na()
+
+# Guard against degenerate cases
+if (nrow(d_model) < 25 || dplyr::n_distinct(d_model$obese) < 2) {
+  tibble(
+    note = "Not enough complete data or variation in outcome to fit the model."
+  ) |>
+    gt::gt()
+} else {
+  fit <- suppressWarnings(glm(obese ~ ridageyr + sex + ldl_calc + sbp,
+                              data = d_model, family = binomial()))
+
+  # Wald 90% CI on log-odds, then exponentiate to OR scale
+  z <- qnorm((1 + conf90) / 2)
+  out <- broom::tidy(fit) |>
+    mutate(
+      conf.low  = estimate - z * std.error,
+      conf.high = estimate + z * std.error
+    ) |>
+    # Convert to Odds Ratios
+    mutate(
+      OR       = exp(estimate),
+      CI_low   = exp(conf.low),
+      CI_high  = exp(conf.high)
+    ) |>
+    select(term, OR, CI_low, CI_high, p.value) |>
+    mutate(across(where(is.numeric), ~round(.x, 3)))
+
+  out |>
+    gt::gt() |>
+    gt::cols_label(term = "Term", OR = "OR", CI_low = "CI low", CI_high = "CI high",
+                   p.value = "p")
+}
+
+```
+
+# Data
+
+```{r}
+d |>
+  arrange(seqn) |>
+  select(seqn, sex, age = ridageyr, income_cat, bmxbmi, sbp, dbp,
+         tc_mgdl, hdl_mgdl, trig_mgdl, ldl_calc, a1c_pct, glu_mgdl, hrs_fast) |>
+  datatable(
+    colnames = c("SEQN","Sex","Age","Income","BMI","SBP","DBP",
+                 "TC","HDL","Trig","LDL (calc)","A1c","Glucose","Hours fasted"),
+    options = list(dom = 'ftp', paging = TRUE, pageLength = 15, scrollX = TRUE)
+  )
+```
+
+# About
+
+**Study 1 convention:** all confidence intervals shown are **{r} 100*params$conf_level`%** and are **unweighted** sample intervals (binomial “prop.test” for proportions; t-based for means).  
+For population inference, use NHANES design/weights with appropriate variance estimation.
+

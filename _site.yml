@@ -7,6 +7,10 @@ navbar:
       href: index.html
     - text: "About"
       href: about.html
+    - text: "cornealdata"
+      href: cornealdata.html
+    - text: "Myblog"
+      href: myblog.html
     - text: "Meet My Cat 🐾"
       href: meet-my-cat.html
   right:

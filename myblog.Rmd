@@ -1,0 +1,277 @@
+---
+title: "From Raw NHANES to a Working Dashboard"
+subtitle: "Study 1 (2017–Mar 2020, 90% CIs) — build notes, hypotheses, results"
+author: "Di Fan"
+date: 09/29/2025
+categories: [NHANES, R, Quarto, Data Visualization, Reproducible Research]
+image: images/nhanes-dashboard-cover.png
+description: "How I built a NHANES dashboard, what I tested, and what I learned — with code, plots, and 90% confidence intervals."
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-location: left
+    code-fold: true
+    df-print: paged
+    smooth-scroll: true
+    link-external-newwindow: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(tidyverse)
+library(janitor)
+library(scales)
+library(gt)
+library(broom)
+library(purrr)
+
+# ---- Load processed data built earlier ----
+# Produced by scripts/01_fetch_nhanes.R + scripts/02_build_master.R
+nh <- readRDS("data/processed/nhanes_2017_2020.rds") |>
+  clean_names() |>
+  mutate(
+    sex = factor(sex, levels = c("Male","Female")),
+    income_cat = cut(indfmpir, breaks = c(-Inf, 1, 2, Inf),
+                     labels = c("≤100% poverty", "100–200%", ">200%"))
+  )
+
+# ---- Study 1 snapshot filters (static, no Shiny UI) ----
+sex_pick   <- "All"    # "All", "Male", "Female"
+age_min    <- 20
+age_max    <- 59
+fast_only  <- TRUE     # Fasting >= 8h for fasting summaries
+conf90     <- 0.90     # Use 90% confidence level across the post
+
+d <- nh |>
+  filter(ridageyr >= age_min, ridageyr <= age_max)
+if (sex_pick != "All") d <- d |> filter(sex == sex_pick)
+
+d_fast <- d
+if (isTRUE(fast_only)) {
+  d_fast <- d_fast |> filter(!is.na(hrs_fast), hrs_fast >= 8)
+}
+
+# ---- Helpers ----
+fmt_pct <- label_percent(accuracy = 0.1)
+
+summ_ci <- function(x, conf = 0.90) {
+  x <- x[!is.na(x)]
+  n <- length(x); m <- mean(x); s <- sd(x)
+  if (n <= 1 || is.na(s)) return(tibble(mean = m, low = NA_real_, high = NA_real_, n = n))
+  tcrit <- qt((1 + conf) / 2, df = n - 1)
+  se <- s / sqrt(n)
+  tibble(mean = m, low = m - tcrit*se, high = m + tcrit*se, n = n)
+}
+
+# ---- KPIs for inline text ----
+N_participants <- nrow(d)
+mean_age  <- mean(d$ridageyr, na.rm = TRUE)
+mean_bmi  <- mean(d$bmxbmi,   na.rm = TRUE)
+
+# Obesity prevalence (BMI >= 30) with 90% CI
+ob_cases <- sum(d$bmxbmi >= 30, na.rm = TRUE)
+ob_n     <- sum(!is.na(d$bmxbmi))
+ob_prev  <- ob_cases / ob_n
+ob_ci    <- prop.test(ob_cases, ob_n, conf.level = conf90, correct = TRUE)$conf.int
+
+# HTN prevalence (>=130/80) with 90% CI
+htn_cases <- sum(d$htn_130_80 == 1, na.rm = TRUE)
+htn_n     <- sum(!is.na(d$htn_130_80))
+htn_prev  <- htn_cases / htn_n
+htn_ci    <- prop.test(htn_cases, htn_n, conf.level = conf90, correct = TRUE)$conf.int
+
+# Model frame + Wald 90% CIs (avoid profile CI failures)
+d_model <- d |>
+  transmute(
+    obese = as.integer(bmxbmi >= 30),
+    ridageyr, sex, ldl_calc, sbp
+  ) |>
+  tidyr::drop_na()
+
+fit_ok <- nrow(d_model) >= 25 && dplyr::n_distinct(d_model$obese) >= 2
+if (fit_ok) {
+  fit <- suppressWarnings(glm(obese ~ ridageyr + sex + ldl_calc + sbp,
+                              data = d_model, family = binomial()))
+  z <- qnorm((1 + conf90) / 2)
+  model_tbl <- broom::tidy(fit) |>
+    mutate(
+      conf.low  = estimate - z * std.error,
+      conf.high = estimate + z * std.error,
+      OR      = exp(estimate),
+      CI_low  = exp(conf.low),
+      CI_high = exp(conf.high)
+    ) |>
+    transmute(term, OR, CI_low, CI_high, p.value) |>
+    mutate(across(where(is.numeric), ~round(.x, 3)))
+}
+```
+
+## TL;DR
+
+- I combined NHANES **2017–2018** and **2019–Mar 2020 (pre-pandemic)** into a single analysis file and built a reusable dashboard.
+- This post focuses on **Study 1**: ages **`r age_min`–`r age_max`**, sex **`r sex_pick`**, and fasting labs **`r ifelse(fast_only, "≥8h only", "all participants")`**.
+- **90% confidence intervals** are used throughout.
+- Sample snapshot: **`r scales::comma(N_participants)`** participants; mean age **`r round(mean_age,1)`**; mean BMI **`r round(mean_bmi,1)`**.
+- Obesity prevalence: **`r fmt_pct(ob_prev)`** (90% CI **`r fmt_pct(ob_ci[1])`–`r fmt_pct(ob_ci[2])`**).  
+- Hypertension (≥130/80): **`r fmt_pct(htn_prev)`** (90% CI **`r fmt_pct(htn_ci[1])`–`r fmt_pct(htn_ci[2])`**).
+
+---
+
+## Why I built this
+
+I wanted a **quick, reproducible way** to explore NHANES exam + lab measures without fighting 47 separate files every time. A dashboard lets me:
+- standardize the **data wrangling** once,
+- keep the **analysis logic** in the open,
+- and tell a story with plots that update when the filters change.
+
+Also… I like dashboards. They feel like a little command center for your brain.
+
+## Data and sources
+
+- **NHANES**: U.S. civilian, non-institutionalized population; multistage, stratified survey.  
+- Cycles used: **2017–2018** and **2019–March 2020 (pre-pandemic)**.  
+- I merged key files (Demographics, Examination, Laboratory). Final dataset lives at  
+  `data/processed/nhanes_2017_2020.rds`.
+
+**Notes on weighting**  
+This post shows **unweighted sample summaries** (with 90% CIs). For population inference, you’d use MEC weights (`wtmecprp`) or fasting subsample weights (`wt_fast`) plus `sdmvpsu`/`sdmvstra`.
+
+## How the dashboard was built
+
+1. **Fetch & cache** raw tables via `nhanesA` (scripts/01).  
+2. **Harmonize** variable names and compute derived fields (e.g., `htn_130_80`, Friedewald LDL) (scripts/02).  
+3. Save a **single RDS** with one row per participant (`seqn`).  
+4. Build a **Quarto dashboard** that:
+   - computes KPIs,
+   - shows **BMI vs Total Cholesterol**,
+   - shows **Hypertension by income** with CIs,
+   - summarizes **fasting markers**,
+   - and fits a simple **logistic model** for obesity.
+
+## Hypotheses (Study 1)
+
+1. **BMI vs Total Cholesterol**: Positive association.  
+2. **Hypertension vs Income**: Higher prevalence at lower income-to-poverty ratios.  
+3. **Fasting markers**: Expected patterns (e.g., TG and glucose higher than HDL on average).  
+4. **Obesity model**: Odds of obesity increase with **age** and **SBP**; relationship with **LDL** positive; **sex** differences possible.
+
+## Analytic approach
+
+- **Filters**: ages `r age_min`–`r age_max`, sex `r sex_pick`; fasting subset = `r fast_only`.  
+- **CIs**: 90% throughout — binomial CIs for proportions, t-intervals for means, Wald-type for model ORs.  
+- **Missingness**: expected; handled via `na.rm = TRUE` or dropping incomplete rows for the model.
+
+## Results
+
+### BMI vs Total Cholesterol
+
+```{r}
+#| label: fig-bmi-tchol
+#| fig-cap: "BMI vs Total Cholesterol (unweighted sample)."
+d |>
+  filter(!is.na(bmxbmi), !is.na(tc_mgdl)) |>
+  ggplot(aes(x = bmxbmi, y = tc_mgdl, color = sex)) +
+  geom_point(alpha = 0.35) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(x = "BMI (kg/m²)", y = "Total cholesterol (mg/dL)", color = "Sex") +
+  theme_minimal()
+```
+
+> Visual impression matches H1: a mild positive slope.
+
+### Hypertension (≥130/80) by income (90% CI)
+
+```{r}
+#| label: fig-htn-income
+#| fig-cap: "Hypertension prevalence by income-to-poverty category, with 90% CIs (unweighted)."
+htn_by_income <- d |>
+  filter(!is.na(income_cat)) |>
+  group_by(income_cat) |>
+  summarise(
+    cases = sum(htn_130_80 == 1, na.rm = TRUE),
+    n     = n(),
+    prev  = cases / n,
+    .groups = "drop"
+  ) |>
+  filter(n > 0) |>
+  mutate(
+    ci_low  = map2_dbl(cases, n, ~ prop.test(.x, .y, conf.level = conf90, correct = TRUE)$conf.int[1]),
+    ci_high = map2_dbl(cases, n, ~ prop.test(.x, .y, conf.level = conf90, correct = TRUE)$conf.int[2])
+  )
+
+ggplot(htn_by_income, aes(x = income_cat, y = prev)) +
+  geom_col(fill = "#0e2635") +
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0.2) +
+  scale_y_continuous(labels = label_percent()) +
+  labs(x = NULL, y = paste0("Prevalence (", round(100*conf90), "% CI)")) +
+  theme_minimal()
+```
+
+> Consistent with H2: the lowest income group shows the highest HTN prevalence.
+
+### Fasting markers (90% CI)
+
+```{r}
+#| label: fig-fasting-ci
+#| fig-cap: "Means of fasting markers with 90% CIs (≥8h fasting subset)."
+lipid_sum <- bind_rows(
+  tibble(marker = "HDL", summ = list(summ_ci(d_fast$hdl_mgdl,  conf = conf90))),
+  tibble(marker = "Triglycerides",  summ = list(summ_ci(d_fast$trig_mgdl, conf = conf90))),
+  tibble(marker = "Glucose", summ = list(summ_ci(d_fast$glu_mgdl,  conf = conf90))),
+  tibble(marker = "A1c", summ = list(summ_ci(d_fast$a1c_pct,   conf = conf90)))
+) |>
+  unnest(cols = summ)
+
+ggplot(lipid_sum, aes(marker, mean)) +
+  geom_col(fill = "#ae8b2d") +
+  geom_errorbar(aes(ymin = low, ymax = high), width = 0.2) +
+  labs(x = NULL, y = paste0("Mean (", round(100*conf90), "% CI)")) +
+  theme_minimal()
+```
+
+> Expected pattern: HDL lower than TG/glucose on the raw scale; A1c in a plausible % range.
+
+### Model: Obesity ~ Age + Sex + LDL + SBP (Wald 90% CI)
+
+```{r}
+#| label: tab-model
+#| tbl-cap: "Logistic regression (unweighted). Odds ratios with Wald 90% CIs."
+if (fit_ok) {
+  model_tbl |>
+    gt() |>
+    cols_label(term = "Term", OR = "OR", CI_low = "90% CI low", CI_high = "90% CI high", p.value = "p")
+} else {
+  tibble(note = "Not enough complete data or variation to fit the model.") |> gt()
+}
+```
+
+## Conclusions
+
+- The dashboard makes it painless to explore **BMI/lipids**, **HTN by income**, and **fasting markers** under different filters.  
+- In this Study 1 snapshot (ages `r age_min`–`r age_max`), the **obesity rate** is **`r fmt_pct(ob_prev)`** and **HTN** is **`r fmt_pct(htn_prev)`**, both with **90% CIs** reported above.  
+- Signals line up with broad expectations, but remember: these are **unweighted** results for exploratory storytelling.
+
+## Limitations & next steps
+
+- **Survey design** matters. I’ll add **weighted estimates** (`survey`/`srvyr`) for publication-ready numbers.  
+- Expand hypotheses (e.g., by race/ethnicity, medication use, smoking).  
+- Add a dedicated **Methods** page to the dashboard with data lineage and exact derivations.
+
+## A personal note
+
+I love projects that start messy and end up tidy. Gluing NHANES into a single file felt like finally getting all the groceries into one pantry bin. Next up: add weights, polish the styles, and maybe ship this as a mini-site. Also, coffee absolutely powered the KPI section ☕.
+
+---
+
+## Repro details
+
+- Dashboard source: `taskB_static.qmd`  
+- This post reads: `data/processed/nhanes_2017_2020.rds`  
+- Confidence level everywhere: **90%**  
+- Code is folded above each figure/table if you’re curious.
